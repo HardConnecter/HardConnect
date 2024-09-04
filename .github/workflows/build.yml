@@ -1,0 +1,126 @@
+name: Build
+
+on:
+  release:
+    types: [ published ]
+  push:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/*.yml"
+  pull_request:
+    types:
+      - opened
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+
+permissions: write-all
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        # Include amd64 on all platforms.
+        goos: [ windows, linux, darwin ]
+        goarch: [ amd64, 386 ]
+        build_tag: [ full, tun ]
+        exclude:
+          # Exclude i386 on darwin.
+          - goarch: 386
+            goos: darwin
+        include:
+          # BEGIN Linux ARM 5 6 7
+          - { goos: linux, goarch: arm, goarm: 7, build_tag: full }
+          - { goos: linux, goarch: arm, goarm: 7, build_tag: tun }
+          - { goos: linux, goarch: arm, goarm: 6, build_tag: full }
+          - { goos: linux, goarch: arm, goarm: 6, build_tag: tun }
+          - { goos: linux, goarch: arm, goarm: 5, build_tag: full }
+          - { goos: linux, goarch: arm, goarm: 5, build_tag: tun }
+          # END Linux ARM 5 6 7
+          # BEGIN Windows ARM 7
+          - { goos: windows, goarch: arm, goarm: 7, build_tag: full }
+          - { goos: windows, goarch: arm, goarm: 7, build_tag: tun }
+          # END Windows ARM 7
+          # BEGIN Other architectures
+          - { goos: darwin, goarch: arm64, build_tag: full }
+          - { goos: darwin, goarch: arm64, build_tag: tun }
+          - { goos: linux, goarch: arm64, build_tag: full }
+          - { goos: linux, goarch: arm64, build_tag: tun }
+          - { goos: linux, goarch: riscv64, build_tag: full }
+          - { goos: linux, goarch: riscv64, build_tag: tun }
+          - { goos: windows, goarch: arm64, build_tag: full }
+          - { goos: windows, goarch: arm64, build_tag: tun }
+          # BEGIN MIPS
+          - { goos: linux, goarch: mips64, build_tag: full }
+          - { goos: linux, goarch: mips64, build_tag: tun }
+          - { goos: linux, goarch: mips64le, build_tag: full }
+          - { goos: linux, goarch: mips64le, build_tag: tun }
+          - { goos: linux, goarch: mipsle, build_tag: full }
+          - { goos: linux, goarch: mipsle, build_tag: tun }
+          - { goos: linux, goarch: mips, build_tag: full }
+          - { goos: linux, goarch: mips, build_tag: tun }
+          # END MIPS
+          # END Other architectures
+      fail-fast: false
+
+    runs-on: ubuntu-latest
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
+      CGO_ENABLED: 0
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v3
+
+      - name: Show workflow information
+        id: get_filename
+        run: |
+          [[ "${{ matrix.build_tag }}" = "full" ]] && export _NAME=$GOOS-$GOARCH$GOARM || export _NAME=$GOOS-$GOARCH$GOARM-tun-only
+          echo "GOOS: $GOOS, GOARCH: $GOARCH, GOARM: $GOARM, RELEASE_NAME: $_NAME"
+          echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
+          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: ^1.22
+
+      - name: Get project dependencies
+        run: go mod download
+
+      - name: Build
+        run: |
+          mkdir -p build_assets
+          go build -tags ${{ matrix.build_tag }} -v -o build_assets/HardConnect -trimpath -ldflags "-s -w -buildid=" .
+
+      - name: Rename Windows HardConnect
+        if: matrix.goos == 'windows'
+        run: |
+          cd ./build_assets || exit 1
+          mv HardConnect HardConnect.exe
+
+      - name: Upload artifact
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v3
+        with:
+          name: HardConnect-${{ steps.get_filename.outputs.ASSET_NAME }}
+          path: build_assets/*
+
+      - name: Create ZIP archive
+        if: github.event_name == 'release'
+        run: |
+          pushd build_assets || exit 1
+          zip -9vr ../HardConnect-$ASSET_NAME.zip .
+          popd || exit 1
+
+      - name: Upload release binary
+        if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ github.event.release.tag_name }} HardConnect-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
